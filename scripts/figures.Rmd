@@ -1,0 +1,1048 @@
+---
+title: "CHESS results analysis"
+author: "Liz Ing-Simmons"
+date: "05/10/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: false
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=6, fig.height=6, dev = "png", message = FALSE)
+pdf.options(useDingbats = FALSE)
+options(stringsAsFactors = FALSE)
+
+basedir <- here::here()
+# basedir <- "~/cluster/chess_followup/"
+SN_category_colours = c("lightgrey", RColorBrewer::brewer.pal(5,"PuRd")[2:5])
+
+```
+
+```{r load_packages, cache = FALSE}
+library("dplyr")
+library("tidyr")
+library("ggplot2")
+library("GenomicRanges")
+library("patchwork")
+```
+
+# Diaz et al. DLBCL data
+
+```{r read_chess_dlbcl, cache=TRUE, fig.width = 8, fig.height=5}
+sample_names <- c("DLBCL", "mixA")
+refs <- c("control", "mixB")
+comparisons <- c(paste0(sample_names, "_vs_", refs))
+
+chess_files <- list.files(file.path(basedir, "data", "chess", comparisons), full.names = TRUE, pattern = "25kb.txt")
+names(chess_files) <- sapply(chess_files, function(path){
+  parts <- tail(strsplit(path, "/")[[1]], 2)
+  gsub(".txt|genome_scan", "", paste(parts, collapse = ""))
+})
+
+chess_comparisons_DLBCL <- lapply(chess_files, function(f){
+  read.table(f, sep = "\t", header = TRUE) 
+}) %>% bind_rows(.id = "comparison") %>%
+  extract(comparison, regex = "(.*)_vs_(.*)_window([[:alnum:]]+Mb)_step([[:alnum:]]+[k|M]b)_([[:alnum:]]+kb)",
+          into = c("query", "ref", "window_size", "step_size", "resolution"), 
+          remove = FALSE) %>% 
+  mutate(ref = factor(ref, levels = unique(refs)),
+         query = factor(query, levels = unique(sample_names))) %>%
+  dplyr::filter(!is.na(ssim))
+
+# add genomic position data
+
+pairs_files <- list.files(file.path(basedir, "data", "chess"), pattern = "hg38_pairs_.*.bedpe", full.names = TRUE)
+names(pairs_files) <-  gsub(".bedpe|hg38_pairs_", "", basename(pairs_files))
+
+comparison_regions <- lapply(pairs_files, function(f){
+  read.table(f, sep = "\t", 
+             col.names = c("chr", "start", "end", "chr2", "start2", "end2", 
+                           "ID", "score", "strand1", "strand2")) %>% 
+    dplyr::select(chr, start, end, ID)
+}) %>% bind_rows(.id = "params")  %>%
+  extract(params, regex = "window([[:alnum:]]+Mb)_step([[:alnum:]]+[k|M]b)", 
+          into = c("window_size", "step_size"))
+
+chess_comparisons_DLBCL <- left_join(chess_comparisons_DLBCL, comparison_regions)
+```
+
+## Overview plots
+
+```{r overview_25kb, fig.width=12, fig.height=6}
+chr_order <- paste0("chr", c(1:22, "X", "Y"))
+chr_offsets <- 
+  chess_comparisons_DLBCL  %>% 
+  dplyr::select(chr, end) %>% 
+  group_by(chr) %>% 
+  summarise(length = max(end)) %>% 
+  mutate(chr = factor(chr, levels = chr_order, ordered = TRUE)) %>% 
+  arrange(chr) %>% 
+  mutate(offset = lag(length, default = 0)) %>% 
+  mutate(offset = cumsum(offset + 20e6)) %>% 
+  mutate(midpoint = length/2) %>% 
+  mutate(tick_pos = offset+midpoint)
+
+to_plot <- chess_comparisons_DLBCL %>% 
+  dplyr::filter(resolution=="25kb") %>% 
+  mutate(chr = factor(chr, levels = chr_order, ordered = TRUE)) %>% 
+  left_join(chr_offsets) %>% 
+  mutate(pos = start + offset) %>% 
+  mutate(category = case_when(
+    z_ssim <= -1.2 & SN > 0.6 ~ "SN > 0.6 & Z-SSIM < -1.2",
+    z_ssim <= -1.2  ~ "Z-SSIM < -1.2",
+    TRUE ~ "Z-SSIM > -1.2"
+  )) %>% 
+  mutate(category = factor(category, levels = c("Z-SSIM > -1.2", "Z-SSIM < -1.2", "SN > 0.6 & Z-SSIM < -1.2"), ordered = TRUE)) %>% 
+  arrange(category) %>% 
+  tidyr::unite("comparison", query, ref, sep = "_vs_")
+
+all_chrs <- to_plot %>% 
+  ggplot(aes(x = pos, y = -1*z_ssim, colour = category)) +
+  geom_hline(yintercept = 1.2, colour = "grey", linetype="dotted", size = 1) +
+  geom_point(size = 0.8) +
+  scale_colour_manual(values = c("Z-SSIM > -1.2" = "lightgrey", "Z-SSIM < -1.2" = "pink", "SN > 0.6 & Z-SSIM < -1.2" = "darkred")) +
+  scale_x_continuous(breaks = chr_offsets$tick_pos, labels = chr_offsets$chr) +
+  scale_y_continuous(breaks = c(-6, -4, -2, 0, 2)) +
+  theme_classic(base_size = 16) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(x = "", y = "-1 x Z-normalised\nSSIM") +
+  facet_grid(comparison ~.)
+
+chr2 <- to_plot %>% 
+  dplyr::filter(chr=="chr2") %>% 
+  ggplot(aes(x = start, y = -1*z_ssim, colour = category)) +
+  geom_hline(yintercept = 1.2, colour = "grey", linetype="dotted", size = 1) +
+  geom_point(size = 0.8) +
+  scale_colour_manual(values = c("Z-SSIM > -1.2" = "lightgrey", "Z-SSIM < -1.2" = "pink", "SN > 0.6 & Z-SSIM < -1.2" = "darkred")) +
+  scale_x_continuous(labels = scales::unit_format(unit = "Mb", scale = 1e-6)) +
+  scale_y_continuous(breaks = c(-4, -2, 0, 2)) +
+  theme_classic(base_size = 16) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "chr2", y = "-1 x Z-normalised\nSSIM") +
+  facet_grid(comparison ~.)
+ 
+all_chrs
+chr2
+ 
+```
+
+## Comparing real comparison vs mixed samples
+
+```{r }
+chess_comparisons_DLBCL_real <- chess_comparisons_DLBCL %>% 
+  dplyr::filter(query=="DLBCL", ref == "control") %>% 
+  dplyr::select(-comparison, -query, -ref)
+
+chess_comparisons_DLBCL_mixed <- chess_comparisons_DLBCL %>% 
+  dplyr::filter(query=="mixA", ref == "mixB") %>% 
+  dplyr::select(-comparison, -query, -ref)
+
+join_cols <- setdiff(colnames(chess_comparisons_DLBCL_real), c("SN", "ssim", "z_ssim"))
+
+chess_comparisons_DLBCL_combined <- chess_comparisons_DLBCL_real %>% 
+  left_join(chess_comparisons_DLBCL_mixed,by = join_cols, suffix = c("_real", "_mixed"))
+```
+
+```{r real_mixed_correlations, fig.width=5, fig.height=3}
+ssim_corAB <- broom::tidy(cor.test(chess_comparisons_DLBCL_combined$ssim_real,
+                                 chess_comparisons_DLBCL_combined$ssim_mixed, method = "pearson"))
+
+p1 <- ggplot(chess_comparisons_DLBCL_combined, aes(x = ssim_real, y = ssim_mixed)) +
+  geom_point(size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "blue", size = 1) +
+  # geom_text(data = ssim_corAB, x = 0, y = 0.95, hjust = "left",
+  #           aes(label = paste0("R = ", signif(estimate, 3)))) +
+  # geom_text(data = ssim_corAB, x = 0, y = 0.95, hjust = "left",
+  #           aes(label = paste0("\n\np = ", format.pval(p.value, 2)))) +
+  theme_classic(base_size = 10) +
+  labs(x = "SSIM (DLBCL, control)", y = "SSIM (mixA, mixB)")
+
+SN_corAB <- broom::tidy(cor.test(chess_comparisons_DLBCL_combined$SN_real,
+                                 chess_comparisons_DLBCL_combined$SN_mixed, method = "pearson"))
+p2 <- ggplot(chess_comparisons_DLBCL_combined, aes(x = SN_real, y = SN_mixed)) +
+  geom_point(size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "blue", size = 1) +
+  # geom_text(data = SN_corAB, x = 0.1, y = 0.6, hjust = "left",
+  #           aes(label = paste0("R = ", signif(estimate, 3)))) +
+  # geom_text(data = SN_corAB, x = 0.1, y = 0.6, hjust = "left",
+  #           aes(label = paste0("\n\np = ", format.pval(p.value, 2)))) +
+  theme_classic(base_size = 10) +
+  labs(x = "SN (DLBCL, control)", y = "SN (mixA, mixB)")
+
+Fig1_DLBCL_SSIM_SN_scatterplot <- p1 + p2
+
+Fig1_DLBCL_SSIM_SN_scatterplot
+
+ggsave(file.path(basedir, "figures/final/Fig1_DLBCL_SSIM_SN_scatterplot.pdf"))
+
+bind_rows(SSIM = ssim_corAB, SN = SN_corAB, .id = "variable")
+```
+
+```{r}
+ssim_wilcoxAB <- broom::tidy(wilcox.test(chess_comparisons_DLBCL_combined$ssim_real,
+                                         chess_comparisons_DLBCL_combined$ssim_mixed, paired = TRUE))
+SN_wilcoxAB <- broom::tidy(wilcox.test(chess_comparisons_DLBCL_combined$SN_real,
+                                 chess_comparisons_DLBCL_combined$SN_mixed, paired = TRUE))
+
+bind_rows(SSIM = ssim_wilcoxAB, SN = SN_wilcoxAB, .id = "variable")
+
+```
+
+```{r, fig.width=8, fig.height=2}
+ssim_diff <- chess_comparisons_DLBCL_combined %>% 
+  mutate(ssim_diff = ssim_real - ssim_mixed)
+
+Fig1_DLBCL_SSIM_diff_chr2 <- ssim_diff %>% 
+  dplyr::filter(chr == "chr2") %>% 
+  ggplot(aes(x = start, y = ssim_diff)) +
+  geom_line() +
+  scale_x_continuous(labels = scales::unit_format(unit = "Mb", scale = 1e-6)) +
+  theme_classic(base_size = 10) +
+  labs(x = "Position on chr2", y = "SSIM (patient, control)\n- SSIM (mixed)")
+
+# ssim_diff %>%
+#   arrange(ssim_diff) %>%
+#   dplyr::filter(chr == "chr2") %>%
+#   head(n = 10) %>%
+#   select(chr, start, end) %>%
+#   unique() %>%
+#   write.table(file = file.path(basedir, "data/chess/DLBCL_vs_control/chr2_top10_differences_25kb.bed"),
+#               col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
+
+Fig1_DLBCL_SSIM_diff_chr2
+
+ggsave(file.path(basedir, "figures/final/Fig1_DLBCL_SSIM_diff_chr2.pdf"))
+
+
+chess_comparisons_DLBCL_combined_ranking <- chess_comparisons_DLBCL_combined %>% 
+  mutate(rank_real = dplyr::min_rank(ssim_real),
+         rank_mixed = dplyr::min_rank(ssim_mixed)) %>% 
+  mutate(rank_diff_mixed = rank_real - rank_mixed)
+
+Fig1_DLBCL_SSIM_rankdiff_chr2 <- chess_comparisons_DLBCL_combined_ranking %>% 
+  dplyr::filter(chr == "chr2") %>% 
+  ggplot(aes(x = start, y = rank_diff_mixed)) +
+  geom_line() +
+  scale_x_continuous(labels = scales::unit_format(unit = "Mb", scale = 1e-6)) +
+  theme_classic(base_size = 10) +
+  labs(x = "Position on chr2", y = "SSIM rank difference")
+
+Fig1_DLBCL_SSIM_rankdiff_chr2
+
+ggsave(file.path(basedir, "figures/final/Fig1_DLBCL_SSIM_rankdiff_chr2.pdf"))
+```
+
+```{r}
+top10_ssim_diff <- ssim_diff %>%
+  arrange(ssim_diff) %>%
+  dplyr::filter(chr == "chr2") %>%
+  head(n = 10)
+
+top10_ssim_rankdiff <- chess_comparisons_DLBCL_combined_ranking %>%
+  arrange(rank_diff_mixed) %>%
+  dplyr::filter(chr == "chr2") %>%
+  head(n = 10)
+
+top10_ssim_diff %>% 
+  dplyr::filter(ID %in% top10_ssim_rankdiff$ID) %>% 
+  arrange(start) %>% 
+  tidyr::unite("region", chr, start, end, sep = "-") %>% 
+  pull(region)
+```
+
+
+```{r, fig.width=7, fig.height=2}
+Fig1_DLBCL_SSIM_SN_scatterplot + Fig1_DLBCL_SSIM_diff_chr2 + 
+  plot_layout(widths = c(1.5, 1.5, 5))
+
+ggsave(file.path(basedir, "figures/final/Fig1_DLBCL_SSIM_diff_assembled.pdf"))
+
+
+Fig1_DLBCL_SSIM_SN_scatterplot + Fig1_DLBCL_SSIM_rankdiff_chr2 + 
+  plot_layout(widths = c(1.5, 1.5, 5))
+
+ggsave(file.path(basedir, "figures/final/Fig1_DLBCL_SSIM_rankdiff_assembled.pdf"))
+```
+
+
+Of the ten 2 Mb windows with the largest SSIM differences on chr2, 6 are genuine differences. 3 are adjacent to the centromere and contain regions that have mapping artefacts and low coverage and should likely have been filtered in Hi-C processing. One region contains a genuine patient-control difference that nevertheless overlaps a likely mapping artefact.
+
+
+
+## Comparing SSIM and SN to coverage and insulation variance
+
+```{r read_insulation, cache=TRUE, cache.lazy=FALSE}
+insulation_score_bigwigs <- list.files(file.path(basedir, "data", "boundaries"), 
+                                       full.names = TRUE, pattern = "(DLBCL_25kb|control_25kb).*bw")
+
+names(insulation_score_bigwigs) <- gsub(".bw", "", basename(insulation_score_bigwigs))
+insulation_score_list <- lapply(insulation_score_bigwigs, rtracklayer::import.bw)
+
+regions <- makeGRangesFromDataFrame(comparison_regions, keep.extra.columns = TRUE)
+start(regions) <- start(regions) + 1
+
+comparison_regions <- as_tibble(comparison_regions)
+comparison_regions$regions <- as.list(split(regions, 1:length(regions)))
+
+get_var <- function(regions, insulation, ...){
+  gr <- subsetByOverlaps(insulation, regions)
+  var(gr$score, na.rm = TRUE)
+}
+
+# just using two representative insulation tracks
+regions_w_var_list <- lapply(insulation_score_list[c("control_25kb_8", "DLBCL_25kb_8")], function(x){
+  comparison_regions %>% 
+    mutate(variance = purrr::pmap_dbl(comparison_regions, get_var, insulation = x)) %>% 
+    return(.)
+  })
+```
+
+```{r}
+regions_w_var <- bind_rows(regions_w_var_list, .id = "insulation")  %>% 
+  dplyr::select(-regions) %>% 
+  tidyr::pivot_wider(names_from = insulation, values_from = variance)
+
+# regions_w_var %>%
+#   dplyr::select(starts_with("control"), starts_with("DLBCL")) %>%
+#   as.matrix() %>%
+#   cor(use = "pairwise.complete.obs")
+
+chess_comparisons_DLBCL_combined_w_var <- left_join(chess_comparisons_DLBCL_combined, 
+                                                   regions_w_var)
+````
+
+```{r read_coverage, cache=TRUE}
+samples <- c("DLBCL", "control")
+
+marginals_files <- file.path(basedir, "data/hic/", samples, paste0(samples, "_25kb_marginals.bed"))
+names(marginals_files) <- gsub("_marginals.bed", "", basename(marginals_files))
+marginals_list <- lapply(marginals_files, function(f){
+  readr::read_delim(f, delim = "\t", col_names = c("chr", "start", "end", "name", "score", "strand")) %>% 
+    makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+})
+
+get_coverage <- function(regions, marginals, ...){
+  gr <- subsetByOverlaps(marginals, regions)
+  sum(gr$score, na.rm = TRUE)
+}
+
+regions_w_coverage_list <- lapply(marginals_list, function(x){
+  comparison_regions %>% 
+    mutate(coverage = purrr::pmap_dbl(comparison_regions, get_coverage, marginals = x)) %>% 
+    return(.)
+  })
+
+```
+
+```{r}
+regions_w_coverage <- bind_rows(regions_w_coverage_list, .id = "sample")  %>% 
+  dplyr::select(-regions) %>% 
+  # mutate(coverage = log(coverage)) %>% 
+  tidyr::pivot_wider(names_from = sample, values_from = coverage)
+
+# regions_w_var %>%
+#   dplyr::select(starts_with("control"), starts_with("DLBCL")) %>%
+#   as.matrix() %>%
+#   cor(use = "pairwise.complete.obs")
+
+chess_comparisons_DLBCL_combined_w_var_coverage <- left_join(chess_comparisons_DLBCL_combined_w_var, 
+                                                   regions_w_coverage)
+chess_comparisons_DLBCL_combined_w_var_coverage <- chess_comparisons_DLBCL_combined_w_var_coverage %>% 
+  dplyr::rename("insulation_variance_control" = "control_25kb_8",
+                "insulation_variance_DLBCL" = "DLBCL_25kb_8",
+                "coverage_control" = "control_25kb",
+                "coverage_DLBCL" = "DLBCL_25kb")
+
+head(chess_comparisons_DLBCL_combined_w_var_coverage)
+```
+
+
+```{r fig.width=3, fig.height=2}
+correlations <- chess_comparisons_DLBCL_combined_w_var_coverage %>% 
+  dplyr::select(starts_with("ssim"), starts_with("SN"), 
+                starts_with("insulation_variance"), starts_with("coverage")) %>%
+  corrr::correlate(method = "pearson") %>% 
+  dplyr::select(term, starts_with("insulation_variance"), starts_with("coverage")) %>% 
+  dplyr::filter(startsWith(term, "ssim") | startsWith(term, "SN")) %>% 
+  corrr::stretch()
+
+correlations %>% 
+  tidyr::extract(x, into = c("variable", "var_sample"), regex = "(.*)_(control|DLBCL)") %>% 
+  tidyr::extract(y, into = c("output", "comparison"), regex = "(.*)_(real|mixed)") %>% 
+  dplyr::filter(comparison=="real") %>% 
+  ggplot(aes(x = output, y = var_sample, fill = r, label = signif(r, 2))) +
+  geom_tile() +
+  geom_text() +
+  facet_wrap(~variable,nrow = 2, strip.position = "left") +
+  theme_classic(base_size = 10) +
+  scale_fill_distiller(direction = 1) +
+  theme(strip.placement = "outside") +
+  labs(y = "", x = "", fill = "Pearson's R")
+
+ggsave(file.path(basedir, "figures/final/Fig1_DLBCL_correlations.pdf"))
+
+```
+
+# Wutz et al. cohesin and CTCF degron data
+
+## Valid pairs analysis
+
+N.B. as these numbers are extracted from .mcools, these are post-filtering of binned data.
+
+```{r}
+wutz_metadata <- readr::read_tsv(file.path(basedir, "metadata_2021-09-27-15h-22m.tsv"), comment = "#")
+
+sample_names <- paste(wutz_metadata$`Condition Name`, wutz_metadata$Rep, sep = "_")
+
+stats_files <- file.path(basedir, "data/hic/", sample_names, paste0(sample_names, "_50kb_hic_stats.txt"))
+
+stats <- lapply(stats_files, function(f){
+  read.csv(f, header = FALSE, 
+         col.names = c("class", "n"))
+}) %>% setNames(sample_names) %>% 
+  bind_rows(.id = "file")
+
+ggplot(stats, aes(x = file, y = n)) +
+  geom_col() + 
+  coord_flip() +
+  scale_y_continuous("Sequencing depth", labels = scales::unit_format(unit = "million", scale = 1e-6)) +
+  theme_classic(base_size = 10)
+
+stats %>% 
+  arrange(n)
+```
+
+Because the sequencing depths vary quite a lot, I will continue with datasets downsampled to the same number of valid read pairs. 
+
+## Resolution calculations 
+
+```{r, cache=TRUE}
+marginals_files <- file.path(basedir, "data/hic/", sample_names, paste0(sample_names, "_50kb_marginals.bed"))
+names(marginals_files) <- gsub("_marginals.bed", "", basename(marginals_files))
+wutz_marginals_list <- lapply(marginals_files, function(f){
+  readr::read_delim(f, delim = "\t", col_names = c("chr", "start", "end", "name", "score", "strand")) %>%
+    makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+})
+
+```
+
+```{r}
+wutz_marginals_df <- lapply(wutz_marginals_list, as.data.frame) %>% 
+  bind_rows(.id = "file")
+
+wutz_percent_df <- wutz_marginals_df %>%
+  group_by(file) %>%
+  summarise(percent = 100 * sum(score > 1000) / n()) 
+
+# percent_df %>%
+#   knitr::kable(digits = 1)
+
+ggplot(wutz_percent_df, aes(x = file, y = percent, label = signif(percent, 3))) +
+  geom_col() +
+  geom_text(colour = "black", hjust = "outward", nudge_y = 1) +
+  geom_hline(yintercept = 80, linetype = 2) +
+  scale_y_continuous("% bins with more than 1000 valid reads", limits = c(0, 100)) +
+  coord_flip() +
+  theme_classic(base_size = 10) +
+  labs(x = "")
+
+```
+
+At 50 kb resolution, all samples pass the Rao et al. threshold of having 80% of bins with at least 1000 reads.
+
+## CHESS results
+
+```{r read_chess, cache=TRUE, fig.width = 8, fig.height=5}
+combinations <- expand.grid(sample_names, sample_names) %>% 
+  filter(Var1 != Var2)
+
+comparisons <- c(paste0(combinations$Var1, "_vs_", combinations$Var2))
+
+chess_files <- list.files(file.path(basedir, "data", "chess", comparisons, "downsampled"), full.names = TRUE, pattern = "chr.*txt")
+names(chess_files) <- sapply(chess_files, function(path){
+  parts <- tail(strsplit(path, "/")[[1]], 3)
+  gsub("downsampled_|.txt", "", paste(parts, collapse = "_"))
+})
+
+chess_comparisons_wutz <- lapply(chess_files, function(f){
+  read.table(f, sep = "\t", header = TRUE) 
+}) %>% bind_rows(.id = "comparison") 
+
+chess_comparisons_wutz <- chess_comparisons_wutz %>%
+  extract(comparison, regex = "(.*)_vs_(.*)_(chr[[:alnum:]]+)_window([[:alnum:]]+Mb)_step([[:alnum:]]+[k|M]b)_([[:alnum:]]+kb)",
+          into = c("query", "ref", "chr", "window_size", "step_size", "resolution"), 
+          remove = FALSE) %>% 
+  dplyr::filter(!is.na(ssim))
+
+chess_comparisons_wutz <- left_join(chess_comparisons_wutz, dplyr::select(comparison_regions, -regions))
+```
+
+## plot SSIM and SN violin plots for WT vs. controls, degrons, prometaphase
+
+```{r fig.width=4, fig.height=3}
+plotting_subset_wutz <- chess_comparisons_wutz %>% 
+  dplyr::filter(query=="wt_G1_none_1") %>% 
+  dplyr::filter(ref %in% c("CTCFdegron_G1_auxin0_1", "CTCFdegron_G1_auxin120_1", 
+                           "SCC1degron_G1_auxin0_1", "SCC1degron_G1_auxin180_1", 
+                           "SCC1degron_prometaphase_noRNAi_1")) %>% 
+  dplyr::mutate(ref = case_when(
+    ref == "CTCFdegron_G1_auxin0_1" ~ "CTCF degron (no auxin)",
+    ref == "CTCFdegron_G1_auxin120_1" ~ "CTCF degron (auxin 2h)",
+    ref == "SCC1degron_G1_auxin0_1" ~ "SCC1 degron (no auxin)",
+    ref == "SCC1degron_G1_auxin180_1" ~ "SCC1 degron (auxin 3h)",
+    ref == "SCC1degron_prometaphase_noRNAi_1" ~ "SCC1 degron (no auxin, prometaphase)"
+  )) %>% 
+  dplyr::mutate(ref = factor(ref, levels = c("CTCF degron (no auxin)", 
+                                             "CTCF degron (auxin 2h)",
+                                             "SCC1 degron (no auxin)",
+                                             "SCC1 degron (auxin 3h)",
+                                             "SCC1 degron (no auxin, prometaphase)"), 
+                             ordered = TRUE))
+  
+Fig1_Wutz_SSIM_violin <- ggplot(plotting_subset_wutz, aes(x = ref, y = ssim)) +
+  geom_violin() +
+  stat_summary(fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black") +
+  theme_classic(base_size = 10) + 
+  coord_flip() +
+  labs(x = "", y = "SSIM (WT, query)") +
+  scale_x_discrete(limits = rev)
+Fig1_Wutz_SSIM_violin
+
+ggsave(file.path(basedir, "figures/final/Fig1_Wutz_SSIM_violin.pdf"))
+
+
+Fig1_Wutz_SN_violin <- ggplot(plotting_subset_wutz, aes(x = ref, y = SN)) +
+  geom_violin() +
+  stat_summary(fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black") +
+  theme_classic(base_size = 10) + 
+  coord_flip() +
+  labs(x = "", y = "SN (WT, query)") +
+  scale_x_discrete(limits = rev)
+Fig1_Wutz_SN_violin
+
+ggsave(file.path(basedir, "figures/final/Fig1_Wutz_SN_violin.pdf"))
+
+```
+
+## plot example chromosome
+
+```{r, fig.width=4, fig.height=3}
+Fig1_Wutz_SSIM_chr2 <- plotting_subset_wutz %>%
+  filter(chr=="chr2") %>% 
+  mutate(group = paste0(ref, ifelse(start < 90e6, 1, 2))) %>% 
+  ggplot(aes(x = start, y = ssim, colour = ref, group = group)) +
+  geom_line() +
+  theme_classic(base_size = 10) +
+  scale_x_continuous(labels = scales::unit_format(unit = "Mb", scale = 1e-6)) +
+  labs(y = "SSIM (WT, query)", x = "", colour = "") +
+  scale_colour_manual(values = c("darkblue", "cornflowerblue", "darkred", "lightcoral", "grey")) +
+  theme(legend.position="bottom") +
+  guides(colour=guide_legend(nrow=2,byrow=TRUE))
+Fig1_Wutz_SSIM_chr2
+
+ggsave(file.path(basedir, "figures/final/Fig1_Wutz_SSIM_chr2.pdf"))
+
+
+Fig1_Wutz_SSIM_chr16 <- plotting_subset_wutz %>%
+  filter(chr=="chr16") %>% 
+  mutate(group = paste0(ref, ifelse(start < 40e6, 1, 2))) %>% 
+  ggplot(aes(x = start, y = ssim, colour = ref, group = group)) +
+  geom_line() +
+  theme_classic(base_size = 10) +
+  scale_x_continuous(labels = scales::unit_format(unit = "Mb", scale = 1e-6)) +
+  labs(y = "SSIM (WT, query)", x = "", colour = "") +
+  scale_colour_manual(values = c("darkblue", "cornflowerblue", "darkred", "lightcoral", "grey")) +
+  theme(legend.position="bottom") +
+  guides(colour=guide_legend(nrow=2,byrow=TRUE))
+Fig1_Wutz_SSIM_chr16
+
+ggsave(file.path(basedir, "figures/final/Fig1_Wutz_SSIM_chr16.pdf"))
+
+```
+
+## Coverage correlations
+
+```{r, cache=TRUE}
+get_coverage <- function(regions, marginals, ...){
+  gr <- subsetByOverlaps(marginals, regions)
+  sum(gr$score, na.rm = TRUE)
+}
+
+comparison_regions_4Mb <- comparison_regions %>% 
+  dplyr::filter(window_size == "4Mb") %>% 
+  as_tibble()
+
+regions_4Mb <- makeGRangesFromDataFrame(comparison_regions_4Mb, keep.extra.columns = TRUE)
+start(regions_4Mb) <- start(regions_4Mb) + 1
+
+comparison_regions_4Mb$regions <- as.list(split(regions_4Mb, 1:length(regions_4Mb)))
+
+regions_w_wutz_coverage_list <- lapply(wutz_marginals_list, function(x){
+  comparison_regions_4Mb %>% 
+    mutate(coverage = purrr::pmap_dbl(comparison_regions_4Mb, get_coverage, marginals = x)) %>% 
+    return(.)
+  })
+
+regions_w_wutz_coverage <- bind_rows(regions_w_wutz_coverage_list, .id = "sample")  %>% 
+  dplyr::select(-regions) %>% 
+  # mutate(coverage = log(coverage)) %>% 
+  tidyr::pivot_wider(names_from = sample, values_from = coverage, names_prefix = "cov_")
+```
+
+```{r, fig.height=2}
+regions_w_wutz_coverage <- regions_w_wutz_coverage %>% 
+  dplyr::rename_with(.fn = function(x) { gsub("_50kb", "", x) })
+
+wutz_correlations <- chess_comparisons_wutz %>% 
+  dplyr::select(-comparison) %>% 
+  dplyr::filter(query=="wt_G1_none_1") %>% 
+  dplyr::filter(ref %in% c("CTCFdegron_G1_auxin0_1", "CTCFdegron_G1_auxin120_1", 
+                           "SCC1degron_G1_auxin0_1", "SCC1degron_G1_auxin180_1", 
+                           "SCC1degron_prometaphase_noRNAi_1")) %>%
+  dplyr::select(-z_ssim, -SN) %>% 
+  pivot_wider(names_from = ref, values_from = ssim, names_prefix = "ssim_") %>% 
+  left_join(regions_w_wutz_coverage) %>% 
+  dplyr::select(-c(query, chr, start, end, window_size, step_size, resolution, ID)) %>% 
+  corrr::correlate() %>% 
+  corrr::stretch()
+
+wutz_correlations_subset <- wutz_correlations %>% 
+  dplyr::filter(startsWith(x, "ssim") & startsWith(y, "cov")) %>% 
+  dplyr::mutate(ssim = gsub("ssim_", "", x),
+                cov = gsub("cov_", "", y)) %>% 
+  dplyr::select(-x, -y) %>% 
+  dplyr::filter(cov == "wt_G1_none_1" | ssim==cov) %>% 
+  dplyr::mutate(cov = ifelse(cov == "wt_G1_none_1", "WT", "self")) %>% 
+  dplyr::mutate(ssim = case_when(
+    ssim == "CTCFdegron_G1_auxin0_1" ~ "CTCF degron (no auxin)",
+    ssim == "CTCFdegron_G1_auxin120_1" ~ "CTCF degron (auxin 2h)",
+    ssim == "SCC1degron_G1_auxin0_1" ~ "SCC1 degron (no auxin)",
+    ssim == "SCC1degron_G1_auxin180_1" ~ "SCC1 degron (auxin 3h)",
+    ssim == "SCC1degron_prometaphase_noRNAi_1" ~ "SCC1 degron (no auxin, prometaphase)"
+  )) %>% 
+  dplyr::mutate(ssim = factor(ssim, levels = c("CTCF degron (no auxin)", 
+                                             "CTCF degron (auxin 2h)",
+                                             "SCC1 degron (no auxin)",
+                                             "SCC1 degron (auxin 3h)",
+                                             "SCC1 degron (no auxin, prometaphase)"), 
+                             ordered = TRUE))
+
+Fig1_Wutz_coverage_correlations <- ggplot(wutz_correlations_subset, aes(x = ssim, y = r)) +
+  geom_col() +
+  facet_grid(~cov) +
+  coord_flip() +
+  theme_classic(base_size = 10) +
+  labs(x = "", y = "Pearson's R") +
+  scale_x_discrete(limits = rev)
+Fig1_Wutz_coverage_correlations
+
+ggsave(file.path(basedir, "figures/final/Fig1_Wutz_coverage_correlations.pdf"))
+
+```
+
+```{r fig.height=2, fig.width=7}
+Fig1_Wutz_SSIM_violin + 
+  Fig1_Wutz_SN_violin + scale_x_discrete(labels = rep("", 5)) +
+  Fig1_Wutz_coverage_correlations + scale_x_discrete(labels = rep("", 5), limits = rev) +
+  plot_layout(widths = c(1, 1, 2))
+ggsave(file.path(basedir, "figures/final/Fig1_Wutz_SSIM_SN_violin_correlations_assembled.pdf"))
+
+```
+
+# Rao et al. GM12878 and K562 analysis
+
+## Valid pair counts of GM12878 and K562 biological replicates
+
+```{r}
+stats_files <- list.files(file.path(basedir, "data/hic/"), pattern = "*hic_stats.txt", recursive = TRUE)
+rao_stats_files <- stats_files[startsWith(stats_files, "GM12878") | startsWith(stats_files, "K562")]
+
+rao_stats <- lapply(rao_stats_files, function(f){
+  read.csv(file.path(basedir, "data", "hic", f), header = FALSE, 
+         col.names = c("file", "class", "n"))
+}) %>% bind_rows() %>% 
+  dplyr::filter(class == "valid")
+
+rao_stats <- rao_stats %>% 
+  mutate(file = gsub(".pairs", "", file))
+
+ggplot(rao_stats, aes(x = file, y = n)) +
+  geom_col() + 
+  coord_flip() +
+  scale_y_continuous("Number of valid pairs", labels = scales::unit_format(unit = "million", scale = 1e-6)) +
+  theme_classic(base_size = 10)
+```
+
+## Resolution calculations for GM12878 and K562 replicates
+
+```{r, cache=TRUE}
+sample_names <- c(paste("GM12878", 1:9, sep = "_"),
+                  paste("K562", 1:2, sep = "_"))
+
+rao_marginals_files <- file.path(basedir, "data/hic/", sample_names, paste0(sample_names, "_25kb_marginals.bed"))
+names(rao_marginals_files) <- gsub("_marginals.bed", "", basename(rao_marginals_files))
+rao_marginals_list <- lapply(rao_marginals_files, function(f){
+  readr::read_delim(f, delim = "\t", col_names = c("chr", "start", "end", "name", "score", "strand")) %>% 
+    makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+})
+```
+
+```{r}
+rao_marginals_df <- lapply(rao_marginals_list, as.data.frame) %>% 
+  bind_rows(.id = "file")
+
+rao_percent_df <- rao_marginals_df %>%
+  group_by(file) %>%
+  summarise(percent = 100 * sum(score > 1000) / n()) 
+
+# percent_df %>%
+#   knitr::kable(digits = 1)
+
+ggplot(rao_percent_df, aes(x = file, y = percent, label = signif(percent, 3))) +
+  geom_col() +
+  geom_text(colour = "black", hjust = "outward", nudge_y = 1) +
+  geom_hline(yintercept = 80, linetype = 2) +
+  scale_y_continuous("% bins with more than 1000 valid reads", limits = c(0, 100)) +
+  coord_flip() +
+  theme_classic(base_size = 10) +
+  labs(x = "")
+```
+
+## CHESS results
+
+```{r read_chess_rao, cache=TRUE, fig.width = 8, fig.height=5}
+combinations <- expand.grid(sample_names, sample_names) %>% 
+  filter(Var1 != Var2)
+
+comparisons <- c(paste0(combinations$Var1, "_vs_", combinations$Var2))
+
+chess_files <- list.files(file.path(basedir, "data", "chess", comparisons), full.names = TRUE, pattern = "chr.*txt")
+names(chess_files) <- sapply(chess_files, function(path){
+  parts <- tail(strsplit(path, "/")[[1]], 2)
+  gsub(".txt", "", paste(parts, collapse = "_"))
+})
+
+chess_comparisons_rao <- lapply(chess_files, function(f){
+  read.table(f, sep = "\t", header = TRUE) 
+}) %>% bind_rows(.id = "comparison") %>%
+    extract(comparison, regex = "(.*)_vs_(.*)_(chr[[:alnum:]]+)_window([[:alnum:]]+Mb)_step([[:alnum:]]+[k|M]b)_([[:alnum:]]+kb)",
+          into = c("query", "ref", "chr", "window_size", "step_size", "resolution"), 
+          remove = FALSE) %>% 
+  dplyr::filter(!is.na(ssim))
+
+chess_comparisons_rao <- left_join(chess_comparisons_rao, dplyr::select(comparison_regions, -regions))
+```
+
+
+```{r, fig.width = 4, fig.height = 3}
+chess_comparisons_rao_plotting_subset <- chess_comparisons_rao %>% 
+  dplyr::filter(ref == "GM12878_1") %>% 
+  left_join(rao_stats, by = c("query" = "file")) %>% 
+  rename("n" = "valid pairs")
+
+ggplot(chess_comparisons_rao_plotting_subset, aes(x = query, y = ssim, fill = `valid pairs`)) +
+  geom_violin() +
+  stat_summary(fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black") +
+  theme_classic(base_size = 10) + 
+  coord_flip() +
+  scale_x_discrete("", limits = rev) +
+  scale_fill_fermenter("Valid pairs\n(millions)", 
+                       labels = scales::unit_format(unit = "", scale = 1e-6),
+                       direction = 1)
+ggsave(file.path(basedir, "figures/final/Fig2_Rao_SSIM_violin.pdf"))
+
+ggplot(chess_comparisons_rao_plotting_subset, aes(x = query, y = SN, fill = `valid pairs`)) +
+  geom_violin() +
+  stat_summary(fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black") +
+  theme_classic(base_size = 10) + 
+  coord_flip() +
+  scale_x_discrete("", limits = rev) +
+  scale_fill_fermenter("Valid pairs\n(millions)", 
+                       labels = scales::unit_format(unit = "", scale = 1e-6),
+                       direction = 1)
+ggsave(file.path(basedir, "figures/final/Fig2_Rao_SN_violin.pdf"))
+
+```
+
+## Downsampled CHESS results
+
+```{r read_chess_rao_downsampled, cache=TRUE, fig.width = 8, fig.height=5}
+sample_names_short <- c("K562_1", "K562_2", "GM12878_3", "GM12878_5")
+combinations <- expand.grid(sample_names_short, sample_names_short) %>% 
+  filter(Var1 != Var2)
+
+comparisons <- c(paste0(combinations$Var1, "_vs_", combinations$Var2))
+
+chess_files <- list.files(file.path(basedir, "data", "chess", comparisons, "downsampled"), full.names = TRUE, pattern = "chr.*txt")
+names(chess_files) <- sapply(chess_files, function(path){
+  parts <- tail(strsplit(path, "/")[[1]], 3)
+  gsub("downsampled_|.txt", "", paste(parts, collapse = "_"))
+})
+
+chess_comparisons_rao_downsampled <- lapply(chess_files, function(f){
+  read.table(f, sep = "\t", header = TRUE) 
+}) %>% bind_rows(.id = "comparison") 
+
+chess_comparisons_rao_downsampled <- chess_comparisons_rao_downsampled %>%
+  extract(comparison, regex = "(.*)_vs_(.*)_(chr[[:alnum:]]+)_window([[:alnum:]]+Mb)_step([[:alnum:]]+[k|M]b)_([[:alnum:]]+kb)",
+          into = c("query", "ref", "chr", "window_size", "step_size", "resolution"), 
+          remove = FALSE) %>% 
+  dplyr::filter(!is.na(ssim))
+
+chess_comparisons_rao_downsampled <- left_join(chess_comparisons_rao_downsampled, 
+                                               dplyr::select(comparison_regions, -regions))
+```
+
+### Thresholds from biological replicate comparisons
+
+The idea is to take the top 10% of SN and bottom 10% of SSIM from comparisons of biological replicates and use these to set thresholds for comparisons of different biological conditions. 
+
+```{r}
+# The SSIM Z-score was calculated per chromosome, but I want it across chromosomes, so I'll recalculate this and also calculate Z-scores for SN.
+
+chess_comparisons_rao_downsampled <- chess_comparisons_rao_downsampled %>%
+  group_by(query, ref, window_size, step_size, resolution) %>%
+  mutate(z_SN = (SN - mean(SN)) / sd(SN),
+         z_ssim = (ssim - mean(ssim)) / sd(ssim))
+
+chess_comparisons_rao_downsampled_dedup <- chess_comparisons_rao_downsampled %>% 
+  mutate(query = factor(query, levels = sample_names_short),
+         ref = factor(ref, levels = sample_names_short)) %>% 
+  dplyr::filter(as.numeric(query) < as.numeric(ref)) %>% 
+  mutate(query = as.character(query),
+         ref = as.character(ref))
+
+chess_comparisons_rao_downsampled_dedup <- chess_comparisons_rao_downsampled_dedup %>%
+  tidyr::unite("comparison", query, ref, sep = "_vs_", remove = FALSE) 
+
+GM12878_thresholds <- chess_comparisons_rao_downsampled_dedup %>% 
+  dplyr::filter(startsWith(query, "GM12878") & startsWith(ref, "GM12878")) %>% 
+  group_by(query, ref, window_size, step_size, resolution) %>% 
+  summarise(SN_q90 = quantile(SN, 0.9),
+            ssim_q10 = quantile(ssim, 0.1),
+            SN_q80 = quantile(SN, 0.8),
+            ssim_q20 = quantile(ssim, 0.2))
+
+K562_thresholds <- chess_comparisons_rao_downsampled_dedup %>% 
+  dplyr::filter(startsWith(query, "K562") & startsWith(ref, "K562")) %>% 
+  group_by(query, ref, window_size, step_size, resolution) %>% 
+  summarise(SN_q90 = quantile(SN, 0.9),
+            ssim_q10 = quantile(ssim, 0.1),
+            SN_q80 = quantile(SN, 0.8),
+            ssim_q20 = quantile(ssim, 0.2))
+
+all_thresholds <- bind_rows(GM12878_thresholds, K562_thresholds) %>% 
+  tidyr::unite("comparison", query, ref, sep = "_vs_", remove = FALSE)
+
+all_thresholds
+```
+
+Since the thresholds are very similar, I'll use the slightly less stringent values for this analysis. 
+
+### Applying thresholds
+
+```{r}
+SN_threshold <- all_thresholds %>% pull(SN_q90) %>% min()
+ssim_threshold <- all_thresholds %>% pull(ssim_q10) %>%  max()
+```
+
+```{r}
+chess_comparisons_rao_downsampled_dedup %>% 
+  # dplyr::filter(startsWith(query, "K562") & startsWith(ref, "GM12878")) %>% 
+  ggplot(aes(x = ssim, y = SN)) +
+  geom_rect(aes(xmin=-Inf, xmax=ssim_threshold, ymin=SN_threshold, ymax=Inf), fill = "lightsteelblue") +
+  geom_point(size = 0.5) +
+  facet_grid(query~ref) +
+  theme_classic(base_size = 10) +
+  geom_hline(yintercept = SN_threshold, linetype = 2) +
+  geom_vline(xintercept = ssim_threshold, linetype = 2) +
+  theme(panel.border = element_rect(linetype="solid", colour = "black", 
+                                    fill = NA, size = rel(2)), 
+        axis.line = element_blank()) +
+  labs(x = "SSIM", y = "SN")
+
+Fig2_Rao_SSIM_SN_thresholds_scatterplot <- chess_comparisons_rao_downsampled_dedup %>% 
+  dplyr::filter(startsWith(query, "K562") & startsWith(ref, "GM12878")) %>% 
+  ggplot(aes(x = ssim, y = SN)) +
+  geom_rect(aes(xmin=-Inf, xmax=ssim_threshold, ymin=SN_threshold, ymax=Inf), fill = "lightsteelblue") +
+  geom_point(size = 0.5) +
+  facet_grid(query~ref) +
+  theme_classic(base_size = 10) +
+  geom_hline(yintercept = SN_threshold, linetype = 2) +
+  geom_vline(xintercept = ssim_threshold, linetype = 2) +
+  theme(panel.border = element_rect(linetype="solid", colour = "black", 
+                                    fill = NA, size = rel(2)), 
+        axis.line = element_blank()) +
+  labs(x = "SSIM", y = "SN")
+
+Fig2_Rao_SSIM_SN_thresholds_scatterplot
+
+```
+
+```{r, fig.width=3.5, fig.height=3}
+Fig2_Rao_SSIM_SN_thresholds_scatterplot
+ggsave(file.path(basedir, "figures/final/Fig2_Rao_SSIM_SN_thresholds_scatterplot.pdf"))
+```
+
+
+```{r}
+regions_passing_thresholds <- chess_comparisons_rao_downsampled_dedup %>% 
+    dplyr::filter(SN > SN_threshold & ssim < ssim_threshold)
+
+regions_passing_thresholds
+
+regions_passing_thresholds_n <- regions_passing_thresholds %>% 
+  group_by(query, ref) %>% 
+  summarise(n = n())
+
+regions_passing_thresholds %>% 
+  group_by(ID) %>% 
+  summarise(n = n()) %>% 
+  pull(n) %>% table()
+
+```
+
+### Export regions of interest
+
+```{r, cache=TRUE}
+for (x in unique(regions_passing_thresholds$comparison)){
+  message(x)
+  regions_passing_thresholds %>%
+    dplyr::filter(comparison == x) %>% 
+    arrange(-ssim)  %>% 
+    ungroup() %>% 
+    select(chr, start, end) %>% 
+    unique() %>% 
+    write.table(file = file.path(basedir, "data/chess/", paste0(x, "_window2Mb_step500kb_25kb_ssim10_SN90.bed")),
+                col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
+}
+
+regions_passing_thresholds %>%
+  group_by(ID) %>% 
+  mutate(n_passing = n()) %>% 
+  dplyr::filter(n_passing == 4) %>%
+  arrange(-ssim) %>% 
+  ungroup() %>% 
+  select(chr, start, end) %>% 
+  unique() %>% 
+  write.table(file = file.path(basedir, "data/chess/", "GM12878_vs_K562_window2Mb_step500kb_25kb_ssim10_SN90.bed"),
+              col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+### Export sample regions without changes
+
+```{r, cache=TRUE}
+set.seed(42)
+chess_comparisons_rao_downsampled_dedup %>% 
+  dplyr::filter(!(ID %in% regions_passing_thresholds$ID)) %>% 
+  ungroup() %>% 
+  dplyr::slice_sample(n = 100) %>% 
+  arrange(-ssim)  %>% 
+  select(chr, start, end) %>% 
+  unique() %>% 
+  write.table(file = file.path(basedir, "data/chess/", "GM12878_vs_K562_window2Mb_step500kb_25kb_negative_set.bed"),
+                col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
+
+negative_set <- read.table(file.path(basedir, "data/chess/", "GM12878_vs_K562_window2Mb_step500kb_25kb_negative_set.bed"),
+                           col.names = c("chr", "start", "end"))
+
+negative_set <- left_join(negative_set, comparison_regions)
+
+chess_comparisons_rao_downsampled_dedup %>% 
+  dplyr::filter(startsWith(query, "K562") & startsWith(ref, "GM12878")) %>% 
+  mutate(is_negative = ifelse(ID %in% negative_set$ID, "yes", "no")) %>% 
+  ggplot(aes(x = ssim, y = SN)) +
+  geom_rect(aes(xmin=-Inf, xmax=ssim_threshold, ymin=SN_threshold, ymax=Inf), fill = "lightsteelblue") +
+  geom_point(size = 1, aes(colour = is_negative)) +
+  facet_grid(query~ref) +
+  theme_classic(base_size = 10) +
+  geom_hline(yintercept = SN_threshold, linetype = 2) +
+  geom_vline(xintercept = ssim_threshold, linetype = 2) +
+  theme(panel.border = element_rect(linetype="solid", colour = "black", 
+                                    fill = NA, size = rel(2)), 
+        axis.line = element_blank()) +
+  labs(x = "SSIM", y = "SN") +
+  scale_colour_manual(values = c("yes" = "red", "no" = "black"))
+```
+
+## CHESS results of comparing merged replicates
+
+```{r}
+comparisons <- "GM12878_all_vs_K562_all"
+chess_files <- list.files(file.path(basedir, "data", "chess", comparisons), full.names = TRUE, pattern = "chr.*txt")
+names(chess_files) <- sapply(chess_files, function(path){
+  parts <- tail(strsplit(path, "/")[[1]], 2)
+  gsub(".txt", "", paste(parts, collapse = "_"))
+})
+
+chess_comparisons_rao_merged <- lapply(chess_files, function(f){
+  read.table(f, sep = "\t", header = TRUE) 
+}) %>% bind_rows(.id = "comparison") %>%
+    extract(comparison, regex = "(.*)_vs_(.*)_(chr[[:alnum:]]+)_window([[:alnum:]]+Mb)_step([[:alnum:]]+[k|M]b)_([[:alnum:]]+kb)",
+          into = c("query", "ref", "chr", "window_size", "step_size", "resolution"), 
+          remove = FALSE) %>% 
+  dplyr::filter(!is.na(ssim))
+
+ chess_comparisons_rao_merged <- left_join(chess_comparisons_rao_merged, comparison_regions)
+ 
+ chess_comparisons_rao_merged<- chess_comparisons_rao_merged %>%
+  group_by(query, ref, window_size, step_size, resolution) %>%
+  mutate(z_SN = (SN - mean(SN)) / sd(SN),
+         z_ssim = (ssim - mean(ssim)) / sd(ssim))
+```
+
+When comparing merged replicates of GM12878 and K562, `r sum(chess_comparisons_rao_merged$SN > 0.6)` regions on chromosomes 2 and 16 have an SN value of more than 0.6, out of `r nrow(chess_comparisons_rao_merged)` (`r sum(chess_comparisons_rao_merged$SN > 0.6)*100/nrow(chess_comparisons_rao_merged)` %). 
+
+In comparison, for the DLBCL-control comparison, `r sum(chess_comparisons_DLBCL_real$SN > 0.6)` regions out of  `r nrow(chess_comparisons_DLBCL_real)` or (`r signif(sum(chess_comparisons_DLBCL_real$SN > 0.6)*100/nrow(chess_comparisons_DLBCL_real), 3)` %) of regions genome wide have an SN value of more than 0.6. 
+
+
+### Comparing SN distributions of all samples
+
+```{r, fig.width=4, fig.height=2.5}
+bind_rows(chess_comparisons_DLBCL,
+          chess_comparisons_rao_merged,
+          chess_comparisons_rao_downsampled_dedup) %>%
+  dplyr::filter(comparison != "mixA_vs_mixB_window2Mb_step500kb_25kb") %>% 
+  dplyr::mutate(comparison = case_when(
+    comparison == "DLBCL_vs_control_window2Mb_step500kb_25kb" ~ "DLBCL_vs_control",
+    comparison == "GM12878_all_vs_K562_all_chr16_window2Mb_step500kb_25kb" ~ "GM12878_all_vs_K562_all",
+    comparison == "GM12878_all_vs_K562_all_chr2_window2Mb_step500kb_25kb" ~ "GM12878_all_vs_K562_all",
+    TRUE ~ comparison
+  )) %>% 
+  dplyr::mutate(comparison = factor(comparison, 
+                levels = c("K562_1_vs_GM12878_3",  
+                           "K562_1_vs_GM12878_5", 
+                           "K562_2_vs_GM12878_3",
+                           "K562_2_vs_GM12878_5",
+                           "GM12878_3_vs_GM12878_5",
+                           "K562_1_vs_K562_2",
+                           "GM12878_all_vs_K562_all", 
+                           "DLBCL_vs_control"), ordered = TRUE)) %>% 
+  ggplot(aes(x = comparison, y = SN)) +
+  geom_violin() +
+  stat_summary(fun.data = "mean_sdl",  fun.args = list(mult = 1), 
+    geom = "pointrange", color = "black") +
+  geom_hline(yintercept = 0.6, linetype = 2, colour = "blue") +
+  theme_classic(base_size = 10) + 
+  coord_flip() +
+  labs(x = "")
+  
+
+ggsave(file.path(basedir, "figures/final/Fig2_all_SN_distributions.pdf"))
+```
+
+
+# Session info
+
+This report was generated at `r format(Sys.time(), "%X, %a %b %d %Y")`. 
+
+```{r}
+sessionInfo()
+```
+

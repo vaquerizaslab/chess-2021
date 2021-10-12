@@ -1,0 +1,9 @@
+condition	replicate	run1_read1	run1_read2	run2_read1	run2_read2	genome	fragments
+mixA	1	ERR2704804_1.1.fastq.gz	ERR2704804_2.1.fastq.gz	ERR2704806_1.1.fastq.gz	ERR2704806_2.1.fastq.gz	hs	MboI
+mixA	2	ERR2704805_1.1.fastq.gz	ERR2704805_2.1.fastq.gz	ERR2704807_1.1.fastq.gz	ERR2704807_2.1.fastq.gz	hs	MboI
+mixB	1	ERR2704804_1.2.fastq.gz	ERR2704804_2.2.fastq.gz	ERR2704806_1.2.fastq.gz	ERR2704806_2.2.fastq.gz	hs	MboI
+mixB	2	ERR2704805_1.2.fastq.gz	ERR2704805_2.2.fastq.gz	ERR2704807_1.2.fastq.gz	ERR2704807_2.2.fastq.gz	hs	MboI
+mixC	1	ERR2704804_1.chunked1.fastq.gz	ERR2704804_2.chunked1.fastq.gz	ERR2704806_1.chunked1.fastq.gz	ERR2704806_2.chunked1.fastq.gz	hs	MboI
+mixC	2	ERR2704805_1.chunked1.fastq.gz	ERR2704805_2.chunked1.fastq.gz	ERR2704807_1.chunked1.fastq.gz	ERR2704807_2.chunked1.fastq.gz	hs	MboI
+mixD	1	ERR2704804_1.chunked2.fastq.gz	ERR2704804_2.chunked2.fastq.gz	ERR2704806_1.chunked2.fastq.gz	ERR2704806_2.chunked2.fastq.gz	hs	MboI
+mixD	2	ERR2704805_1.chunked2.fastq.gz	ERR2704805_2.chunked2.fastq.gz	ERR2704807_1.chunked2.fastq.gz	ERR2704807_2.chunked2.fastq.gz	hs	MboI

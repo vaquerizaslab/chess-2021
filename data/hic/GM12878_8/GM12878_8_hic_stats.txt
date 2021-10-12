@@ -1,0 +1,2 @@
+GM12878_8.pairs,total,63931454
+GM12878_8.pairs,valid,63931454

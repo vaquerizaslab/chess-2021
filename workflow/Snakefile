@@ -1,0 +1,636 @@
+import pandas as pd
+import re
+import itertools
+import glob
+from fanc.tools.general import str_to_int
+
+
+configfile: "config.yaml"
+
+samples = pd.read_csv("metadata.txt", sep='\t'
+    ).assign(sample_name=lambda row: (row['condition'] + "_" + row['replicate'].astype(str))
+    ).set_index("sample_name", drop=False)
+
+FASTQ = [re.sub(".fastq.gz", "", f) for f in
+               list(itertools.chain(*samples.loc[:, samples.columns.str.startswith('read')].values)) if not pd.isnull(f) ]
+SAMPLE_NAMES = samples['sample_name'].tolist()
+
+# samples made by mixing reads from DLBCL and control fastq files
+
+mixed_samples = pd.read_csv("mixedfastq_metadata.txt", sep='\t'
+    ).assign(sample_name=lambda row: (row['condition'] + "_" + row['replicate'].astype(str))
+    ).set_index("sample_name", drop=False)
+
+samples_genome_and_RE = pd.concat([samples[["sample_name", "genome", "fragments"]],
+                                   mixed_samples[["sample_name", "genome", "fragments"]]]
+                                   ).set_index("sample_name", drop=False)
+
+wildcard_constraints:
+    sample_name="|".join(samples_genome_and_RE['sample_name']),
+    condition="|".join(['DLBCL', 'control', 'mixA', 'mixB', 'mixC', 'mixD'])
+
+localrules: all
+
+rule all:
+    input:
+        expand("data/fastq/{id}.fastq.gz", id=FASTQ),
+        expand("data/split_fastqs/{id}.{split}.fastq.gz", id=FASTQ, split=[1, 2]),
+        "multiqc_report.html",
+        "scripts/plot_stats.html",
+        expand("figures/wholegenome/{sample_name}_{res}_wholegenome.png", zip,
+               sample_name=SAMPLE_NAMES, res=["20Mb", "20Mb", "20Mb", "20Mb"]),
+
+        
+        # expand("data/{sample_name}/pairs/{sample_name}_{fastq}.{split}.pairs", zip,
+        #     sample_name=mixed_samples.index, fastq=[f.split("_")[0] for f in mixed_samples['run1_read1']],
+        #     split=[f.split(".")[-3] for f in mixed_samples['run1_read1']]),
+        # expand("data/{sample_name}/pairs/{sample_name}_{fastq}.{split}.pairs", zip,
+        #     sample_name=mixed_samples.index, fastq=[f.split("_")[0] for f in mixed_samples['run2_read1']],
+        #     split=[f.split(".")[-3] for f in mixed_samples['run2_read1']]),
+        # expand("data/{condition}_{replicate}/pairs/{condition}_{replicate}.pairs",
+        #     condition=['DLBCL', 'control', 'mixA', 'mixB', 'mixC', 'mixD'],
+        #     replicate=[1, 2]),
+
+        expand("data/chess/{sample1}_vs_{sample2}/genome_scan_window{window}_step{step}_{res}.txt",
+            sample1=['DLBCL', 'mixA', 'mixC'], sample2=['control', 'mixB', 'mixD'], window=['2Mb'], step=["500kb"], res=["10kb", "25kb"]),
+        expand("figures/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_z-ssim1.2_SN{SN_threshold}.pdf", zip,
+            sample1=['DLBCL', 'mixA', 'mixC'], sample2=['control', 'mixB', 'mixD'], SN_threshold=[0.6, 0.3, 0.3]),
+
+        expand("data/chess/{sample1}_vs_{sample2}/genome_scan_window{window}_step{step}_{res}.txt",
+            sample1=['DLBCL_1', 'DLBCL_2', 'control_1', 'control_2'], sample2=['DLBCL_1', 'DLBCL_2', 'control_1', 'control_2'],
+            window=['2Mb'], step=["500kb"], res=["10kb", "25kb"]),
+        expand("figures/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_zssim{zssim_threshold}_zSN{zSN_threshold}.pdf",
+            sample1=['control'], sample2=['DLBCL'], zssim_threshold=10, zSN_threshold=90),
+        "figures/chess/DLBCL_vs_control_chr2_top10_differences_25kb.pdf",
+
+        expand("figures/chess/control_vs_DLBCL_window2Mb_step500kb_25kb_{set}.pdf",
+            set=["top10negativeresiduals", "top10positiveresiduals"]),
+
+        expand("data/chess/{sample1}_vs_{sample2}/genome_scan_window{window}_step{step}_{res}.txt",
+            sample1=['control-nc14_Rep1', 'control-nc14_Rep2', 'Toll10B-nc14_Rep1', 'Toll10B-nc14_Rep2', 'Tollrm910-nc14_Rep1', 'Tollrm910-nc14_Rep2', 'gd7-nc14_Rep1', 'gd7-nc14_Rep2'],
+            sample2=['control-nc14_Rep1', 'control-nc14_Rep2', 'Toll10B-nc14_Rep1', 'Toll10B-nc14_Rep2', 'Tollrm910-nc14_Rep1', 'Tollrm910-nc14_Rep2', 'gd7-nc14_Rep1', 'gd7-nc14_Rep2'],
+            window=['2Mb'], step=["500kb"], res=["10kb", "25kb"]),
+        expand("figures/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_ssim10_SN90.pdf",
+            sample1=['control'], sample2=['gd7', 'Tollrm910', 'Toll10B']),
+        expand("data/chess/{sample1}_vs_{sample2}/genome_scan_window{window}_step{step}_{res}.txt",
+            sample1=['control-nc14'], sample2=['Toll10B-nc14', 'Tollrm910-nc14', 'gd7-nc14'],
+            window=['2Mb'], step=["500kb"], res=["10kb", "25kb"]),
+        expand("figures/chess/merged_{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_zssim10_zSN90.pdf",
+            sample1=['control'], sample2=['gd7', 'Tollrm910', 'Toll10B']),
+        expand("figures/chess/window2Mb_step500kb_25kb_{set}.pdf",
+            set=["alwayssimilar", "SNoutlier"]),
+
+        expand("data/boundaries/{sample}_{res}_{w}.bw",
+            sample=['DLBCL', 'control', 'mixA', 'mixB', 'mixC', 'mixD', 'control-nc14_Rep1', 'control-nc14_Rep2',
+                    'Toll10B-nc14_Rep1', 'Toll10B-nc14_Rep2', 'Tollrm910-nc14_Rep1', 'Tollrm910-nc14_Rep2',
+                    'gd7-nc14_Rep1', 'gd7-nc14_Rep2'],
+            res=["10kb", "25kb"], w=[4, 6, 8, 10, 15]),
+        expand("data/{sample}/hic/{sample}_{res}_marginals.bed",
+            sample=['DLBCL', 'control', 'mixA', 'mixB', 'mixC', 'mixD', 'control-nc14_Rep1', 'control-nc14_Rep2',
+                    'Toll10B-nc14_Rep1', 'Toll10B-nc14_Rep2', 'Tollrm910-nc14_Rep1', 'Tollrm910-nc14_Rep2',
+                    'gd7-nc14_Rep1', 'gd7-nc14_Rep2'],
+            res=["10kb", "25kb"])
+
+
+rule get_data:
+    output:
+        "data/fastq/{id}_{read}.fastq.gz"
+    params:
+        number = lambda wildcards: wildcards.id[-1]
+    shell:
+        "cd data/fastq/ && wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/ERR270/00{params.number}/{wildcards.id}/{wildcards.id}_{wildcards.read}.fastq.gz"
+
+rule fastqc:
+    input:
+        "data/fastq/{id}.fastq.gz"
+    output:
+        "data/fastq/fastqc/{id}_fastqc.html",
+        "data/fastq/fastqc/{id}_fastqc.zip"
+    shell:
+        "fastqc -o data/fastq/fastqc/ -f fastq {input}"
+
+rule multiqc:
+    input:
+        expand("data/fastq/fastqc/{id}_fastqc.html", id = FASTQ),
+        expand("data/fastq/fastqc/{id}_fastqc.zip", id = FASTQ)
+    output:
+        "multiqc_report.html"
+    shell:
+        "multiqc data/fastq/fastqc/"
+
+rule bin_genome:
+    output:
+        "data/{genome}_{fragments}_fragments.bed"
+    params:
+        chrs = lambda wildcards: ",".join(config["chromosomes"][wildcards.genome]),
+        genome_fa = lambda wildcards: config["genome_fasta"][wildcards.genome]
+    shell:
+        "fanc fragments -c {params.chrs} {params.genome_fa} {wildcards.fragments} {output}"
+
+# processing normal fastq files
+
+fastq_dict = {s: ["data/fastq/{}".format(file) for file in samples.loc[s, samples.columns.str.startswith('read')] if not pd.isnull(file)] for s in samples.index}
+
+bam_dict = {}
+
+for sample, fastqs in fastq_dict.items():
+    bam_dict[sample] = [os.path.join("data", sample, "sam", re.sub(".fastq.gz|.fq.gz", ".bam", os.path.basename(x))) for x in fastqs]
+
+bam_dict2 = {}
+
+for sample, fastqs in fastq_dict.items():
+    bam_dict2[sample] = [os.path.join("data", sample, "sam", re.sub(".fastq.gz|.fq.gz", "_sorted.bam", os.path.basename(x))) for x in fastqs]
+
+pairs_dict = {}
+for sample, fastqs in fastq_dict.items():
+    n_runs = len(fastqs)/2
+    if not n_runs.is_integer():
+        raise AssertionError("Odd number of fastq files provided for {}!", sample)
+    else:
+        pairs_dict[sample] = [os.path.join(sample, "pairs", sample + "_" + str(i) + ".pairs") for i in range(int(n_runs))]
+
+for sample in samples.index:
+    rule:
+        input:
+            fastq_dict[sample]
+        output:
+            bam_dict[sample]
+        threads: 16
+        params:
+            name = sample,
+            output_folder = f"data/{sample}/sam/",
+            genome_idx = config["genome_idx"][samples_genome_and_RE["genome"][sample]]
+        shell:
+            "fanc map -t {threads} -tmp "
+            " -q 3 "
+            "{input} {params.genome_idx} {params.output_folder} "
+
+
+rule sort_sam:
+    input:
+        "data/{sample_name}/sam/{read}.bam"
+    output:
+        "data/{sample_name}/sam/{read}_sorted.bam"
+    threads: 4
+    shell:
+        "fanc sort-sam -t {threads} -tmp {input} {output}"
+
+for sample in samples.index:
+    rule:
+        input:
+            bams = bam_dict2[sample],
+            genome = "data/{genome}_{fragments}_fragments.bed".format(genome=samples_genome_and_RE["genome"][sample],
+                                                                 fragments=samples_genome_and_RE["fragments"][sample])
+        output:
+            f"data/{sample}/pairs/{sample}.pairs"
+        shell:
+            "fanc pairs "
+            "-g {input.genome} "
+            "--filter-unmappable --filter-multimapping --filter-quality 3 "
+            "-tmp {input.bams} {output} "
+
+
+# splitting and mixing fastq files - top/bottom!
+
+rule split_fastqs:
+    input:
+        "data/fastq/{id}_{read}.fastq.gz"
+    output:
+        "data/split_fastqs/{id}_{read}.1.fastq.gz",
+        "data/split_fastqs/{id}_{read}.2.fastq.gz"
+    shell:
+        "pyfastx split -n 2 -o data/split_fastqs/ {input}"
+
+rule split_fastqs_in_chunks:
+    input:
+        "data/fastq/{id}_{read}.fastq.gz"
+    output:
+        "data/split_fastqs/{id}_{read}.chunked1.fastq.gz",
+        "data/split_fastqs/{id}_{read}.chunked2.fastq.gz"
+    threads: 4
+    shell:
+        "fastqsplitter -i {input} -o {output[0]} -o {output[1]} -c 6 -t {threads}"
+
+mixed_fastq_dict = {s: ["data/split_fastqs/{}".format(file) for file in mixed_samples.loc[s, mixed_samples.columns.str.startswith('run')] if not pd.isnull(file)] for s in mixed_samples.index}
+
+mixed_bam_dict = {}
+
+for sample, fastqs in mixed_fastq_dict.items():
+    mixed_bam_dict[sample] = [os.path.join("data", sample, "sam", re.sub(".fastq.gz|.fq.gz", ".bam", os.path.basename(x))) for x in fastqs]
+
+mixed_bam_dict_sorted = {}
+
+for sample, fastqs in mixed_fastq_dict.items():
+    mixed_bam_dict_sorted[sample] = [os.path.join("data", sample, "sam", re.sub(".fastq.gz|.fq.gz", "_sorted.bam", os.path.basename(x))) for x in fastqs]
+
+mixed_pairs_dict = {}
+for sample, fastqs in mixed_fastq_dict.items():
+    n_runs = len(fastqs)/2
+    if not n_runs.is_integer():
+        raise AssertionError("Odd number of fastq files provided for {}!", sample)
+    else:
+        mixed_pairs_dict[sample] = [os.path.join(sample, "pairs", sample + "_" + str(i) + ".pairs") for i in range(int(n_runs))]
+
+for sample in mixed_samples.index:
+    rule:
+        input:
+            mixed_fastq_dict[sample]
+        output:
+            mixed_bam_dict[sample]
+        threads: 16
+        params:
+            name = sample,
+            output_folder = f"data/{sample}/sam/",
+            genome_idx = config["genome_idx"][samples_genome_and_RE["genome"][sample]]
+        shell:
+            "fanc map -t {threads} -tmp "
+            " -q 3 "
+            "{input} {params.genome_idx} {params.output_folder} "
+
+# for sample in mixed_samples.index:
+#     rule:
+#         input:
+#             bams = mixed_bam_dict_sorted[sample],
+#             genome = "data/{genome}_{fragments}_fragments.bed".format(genome=samples_genome_and_RE["genome"][sample],
+#                                                                  fragments=samples_genome_and_RE["fragments"][sample])
+#         output:
+#             f"data/{sample}/pairs/{sample}.pairs"
+#         shell:
+#             "fanc auto --no-sam-sort --no-hic --no-filter-pairs "
+#             "-g {input.genome} "
+#             # "--filter-unmappable --filter-multimapping --filter-quality 3 "
+#             " -q 3 "
+#             "-tmp {input.bams} {output} "
+
+
+def get_genome_from_sample_name(wildcards):
+    genome = samples_genome_and_RE["genome"][wildcards.sample_name]
+    fragments = samples_genome_and_RE["fragments"][wildcards.sample_name]
+    return(f"data/{genome}_{fragments}_fragments.bed")
+
+
+rule make_pairs:
+    input:
+        bams = expand("data/{{sample_name}}/sam/{{fastq}}_{read}.{{split}}_sorted.bam", read=[1,2]),
+        genome = get_genome_from_sample_name
+    output:
+        "data/{sample_name}/pairs/{sample_name}_{fastq}.{split}.pairs"
+    shell:
+        "fanc pairs "
+        "-g {input.genome} "
+        "--filter-unmappable --filter-multimapping --filter-quality 3 "
+        "-tmp {input.bams} {output} "
+
+
+def get_pairs_input(wildcards):
+    bams = glob.glob(f"data/{wildcards.sample_name}/sam/*_sorted.bam")
+
+    def bam_name_to_pairs_name(bam):
+        sample_name, fastq, split = re.match("data/(.*)/sam/(ERR[0-9]*)_[1|2].(.*)_sorted.bam", bam).groups()
+        return(f"data/{sample_name}/pairs/{sample_name}_{fastq}.{split}.pairs")
+
+    pairs = [bam_name_to_pairs_name(bam) for bam in bams]
+
+    return(set(pairs))
+
+
+rule merge_pairs:
+    input:
+        get_pairs_input
+    output:
+        "data/{sample_name}/pairs/{sample_name}.pairs"
+    wildcard_constraints:
+        sample_name="|".join(samples_genome_and_RE['sample_name'])
+    run:
+        import logging
+        import fanc
+        logging.basicConfig(level=logging.INFO)
+        for f in input:
+            logging.info(f)
+        pairs_list = [f for f in input]
+        output_file = str(output)
+        pairs = [fanc.load(file_name) for file_name in pairs_list]
+        logging.info(f"Merging and saving to {output_file}")
+        merged = fanc.ReadPairs.merge(pairs, file_name=output_file)
+
+
+## Hi-C processing
+
+rule filter_hic_pairs:
+    input:
+        pairs = ancient("data/{sample_name}/pairs/{sample_name}.pairs"),
+        genome = lambda wildcards: "data/{genome}_{fragments}_fragments.bed".format(genome=samples_genome_and_RE["genome"][wildcards.sample_name],
+                                                                                    fragments=samples_genome_and_RE["fragments"][wildcards.sample_name])
+    output:
+        # stats_plot = "data/{sample_name}/pairs/{sample_name}_filtered_stats.png",
+        redist_plot = "data/{sample_name}/pairs/{sample_name}_filtered_re_dist.png",
+        ligation_plot = "data/{sample_name}/pairs/{sample_name}_filtered_ligation_error.png",
+    wildcard_constraints:
+        sample="|".join(samples_genome_and_RE.query('fragments=="MboI"')['sample_name'])
+    shell:
+        "fanc pairs -tmp "
+        "-g {input.genome} "
+        "--filter-inward 5000 --filter-outward 5000 "
+        "--filter-self-ligations --filter-pcr-duplicates 1 "
+        # "--statistics-plot {output.stats_plot} "
+        "--re-dist-plot {output.redist_plot} "
+        "--ligation-error-plot {output.ligation_plot} "
+        "{input.pairs} "
+
+rule make_hic:
+    input:
+        pairs = "data/{sample_name}/pairs/{sample_name}.pairs",
+        stats = "data/{sample_name}/{sample_name}_hic_stats.txt",
+    output:
+        "data/{sample_name}/hic/{sample_name}.hic"
+    shell:
+        "fanc hic -tmp {input.pairs} {output}"
+
+rule cis_trans_ratio:
+    input:
+        "data/{sample_name}/hic/{sample_name}.hic"
+    output:
+        "data/{sample_name}/{sample_name}_cis_trans_ratio.txt"
+    shell: "fanc cis_trans -o {output} {input}"
+
+rule cis_local_ratio:
+    input:
+        "data/{sample_name}/hic/{sample_name}.hic"
+    output:
+        "data/{sample_name}/{sample_name}_cis_local_ratio.txt"
+    params:
+        threshold = lambda wildcards: config["cis_local_thresholds"][samples_genome_and_RE["genome"][wildcards.sample_name]]
+    shell: "python scripts/get_cis_local_ratio.py {input} {params.threshold} {output}"
+
+rule get_hic_stats:
+    input:
+        pairs = "data/{sample_name}/pairs/{sample_name}.pairs",
+        ligation_plot = "data/{sample_name}/pairs/{sample_name}_filtered_ligation_error.png",
+    output:
+        "data/{sample_name}/{sample_name}_hic_stats.txt"
+    shell: "python scripts/get_stats.py data/{wildcards.sample_name}/pairs/ {output}"
+
+rule get_alignment_stats_bwa:
+    input:
+        expand("data/fastq/{id}.fastq.gz", id = FASTQ),
+        ancient(expand("data/{sample_name}/pairs/{sample_name}.pairs", sample_name = SAMPLE_NAMES))
+    output:
+        "data/sample_alignment_stats_bwa.txt"
+    threads: 16
+    script: "../scripts/alignment_stats_bwa.R"
+
+rule plot_stats:
+    input: 
+        expand("data/{sample_name}/{sample_name}_cis_trans_ratio.txt", sample_name = SAMPLE_NAMES),
+        expand("data/{sample_name}/{sample_name}_cis_local_ratio.txt", sample_name = SAMPLE_NAMES),
+        expand("data/{sample_name}/{sample_name}_hic_stats.txt", sample_name = SAMPLE_NAMES),
+        "data/sample_alignment_stats_bwa.txt"
+    output:
+        "scripts/plot_stats.html"
+    script: "../scripts/plot_stats.Rmd"
+
+rule bin_hic_wholegenome:
+    input: 
+        "data/{sample_name}/hic/{sample_name}.hic"
+    output:
+        "data/{sample_name}/hic/{sample_name}_{res}_wholegenome.hic"
+    threads: 8
+    shell:
+        "fanc hic -t {threads} -tmp "
+        "-b {wildcards.res} --low-coverage-auto --normalise --whole-matrix "
+        "{input} {output}"
+
+rule plot_whole_genome:
+    input:
+        "data/{sample_name}/hic/{sample_name}_{res}_wholegenome.hic"
+    output:
+        "figures/wholegenome/{sample_name}_{res}_wholegenome.png"
+    script:
+        "../scripts/plot_whole_genome.py"
+
+
+rule merge_hic:
+    input:
+        "data/{condition}_1/hic/{condition}_1.hic",
+        "data/{condition}_2/hic/{condition}_2.hic"
+    output:
+        "data/{condition}/hic/{condition}.hic"
+    shell:
+        "fanc hic -tmp {input} {output}"
+
+rule bin_hic:
+    input:
+        "data/{condition}/hic/{condition}.hic"
+    output:
+        "data/{condition}/hic/{condition}_{res}.hic"
+    threads: 8
+    wildcard_constraints:
+        res="|".join(["10kb", "25kb"])
+    shell:
+        "fanc hic -t {threads} -tmp "
+        "-b {wildcards.res} --low-coverage-auto --normalise  "
+        "{input} {output}"
+
+rule chess_make_pairs:
+    output:
+        "data/chess/{genome}_pairs_window{window}_step{step}.bedpe"
+    params:
+        window_bp = lambda wildcards: str_to_int(wildcards.window),
+        step_bp = lambda wildcards: str_to_int(wildcards.step)
+    shell:
+        "chess pairs {wildcards.genome} {params.window_bp} {params.step_bp} {output} && "
+        "sed -i -e 's/chr//g' {output}" # remove chr prefixes!
+
+
+def get_genome_pairs(wildcards):
+    human_samples = ['DLBCL', 'control', 'mixA', 'mixB', 'mixC', 'mixD',
+                     'DLBCL_1', 'DLBCL_2', 'control_1', 'control_2']
+    fly_samples = ['control-nc14_Rep1', 'control-nc14_Rep2', 'Toll10B-nc14_Rep1', 'Toll10B-nc14_Rep2', 
+                   'Tollrm910-nc14_Rep1', 'Tollrm910-nc14_Rep2', 'gd7-nc14_Rep1', 'gd7-nc14_Rep2',
+                   'control-nc14', 'Toll10B-nc14', 'Tollrm910-nc14', 'gd7-nc14']
+    if wildcards.sample1 in human_samples:
+        genome = "hg38"
+    elif wildcards.sample1 in fly_samples:
+        genome = "dm6"
+    else:
+        raise ValueError(f'genome for {wildcards.sample1} not found!')
+
+    genome = f"data/chess/{genome}_pairs_window{wildcards.window}_step{wildcards.step}.bedpe"
+    return(genome)
+
+rule chess_sim:
+    input:
+        matrix1 = "data/{sample1}/hic/{sample1}_{res}.hic",
+        matrix2 = "data/{sample2}/hic/{sample2}_{res}.hic",
+        pairs = get_genome_pairs
+    output:
+        "data/chess/{sample1}_vs_{sample2}/genome_scan_window{window}_step{step}_{res}.txt"
+    threads: 8
+    shell:
+        "chess sim "
+        "{input.matrix1} {input.matrix2}  "
+        "{input.pairs} {output} "
+        "-p {threads}"
+
+
+rule analyse_chess_output:
+    input:
+        expand(expand("data/chess/{sample1}_vs_{sample2}/genome_scan_window{{window}}_step{{step}}_{{res}}.txt",
+            zip, sample1=['DLBCL', 'mixA'], sample2=['control', 'mixB']),
+            window=['2Mb'], step=["500kb"], res=["10kb", "25kb"])
+    output:
+        "data/chess/DLBCL_vs_control/window2Mb_step500kb_25kb_z-ssim1.2_SN0.6.bed",
+        "data/chess/mixA_vs_mixB/window2Mb_step500kb_25kb_z-ssim1.2_SN0.3.bed"
+    script:
+        "scripts/chess_results_analysis.Rmd"
+
+rule make_hic_differences:
+    input:
+        matrix1 = "data/{sample1}/hic/{sample1}_{res}.hic",
+        matrix2 = "data/{sample2}/hic/{sample2}_{res}.hic",
+    output:
+        "data/hic_differences/log2fc_{sample1}_vs_{sample2}_{res}.hic"
+    shell:
+        "fanc compare -c fold-change --log --ignore-infinite --no-scale -tmp "
+        "{input.matrix1} {input.matrix2} {output}"
+
+
+rule plot_chess_regions:
+    input:
+        bed = "data/chess/{sample1}_vs_{sample2}/window2Mb_step500kb_25kb_z-ssim1.2_SN{SN_threshold}.bed",
+        diff_hic = expand(expand("data/hic_differences/log2fc_{sample1}_vs_{sample2}_{{res}}.hic", zip,
+            sample1=['DLBCL', 'mixA'], sample2=['control', 'mixB']), res=['25kb'])
+    output:
+        "figures/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_z-ssim1.2_SN{SN_threshold}.pdf",
+    shell:
+        "python scripts/plot_chess_regions.py {input.bed} {output}"
+
+rule plot_chess_regions2:
+    input:
+        bed = "data/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_{set}.bed",
+        diff_hic = expand(expand("data/hic_differences/log2fc_{sample1}_vs_{sample2}_{{res}}.hic", zip,
+            sample1=['DLBCL', 'mixA'], sample2=['control', 'mixB']), res=['25kb'])
+    output:
+        "figures/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_{set}.pdf"
+    wildcard_constraints:
+        sample1="control",
+        sample2="DLBCL"
+    shell:
+        "python scripts/plot_chess_regions.py {input.bed} {output}"
+
+rule plot_chess_regions3:
+    input:
+        bed = "data/chess/window2Mb_step500kb_25kb_{set}.bed",
+        diff_hic = expand(expand("data/hic_differences/log2fc_{sample1}_vs_{sample2}_{{res}}.hic", zip,
+            sample1=['DLBCL', 'mixA'], sample2=['control', 'mixB']), res=['25kb'])
+    output:
+        "figures/chess/window2Mb_step500kb_25kb_{set}.pdf",
+    shell:
+        "python scripts/plot_chess_regions.py {input.bed} {output}"
+
+rule plot_chess_regions4:
+    input:
+        bed = "data/chess/DLBCL_vs_control/chr2_top10_differences_25kb.bed",
+        diff_hic = expand(expand("data/hic_differences/log2fc_{sample1}_vs_{sample2}_{{res}}.hic", zip,
+            sample1=['DLBCL', 'mixA'], sample2=['control', 'mixB']), res=['25kb'])
+    output:
+        "figures/chess/DLBCL_vs_control_chr2_top10_differences_25kb.pdf",
+    shell:
+        "python scripts/plot_chess_regions.py {input.bed} {output}"
+
+
+
+# Fly data for comparing biological replicates to each other
+
+rule link_fly_data:
+    output:
+        "data/{fly_sample}/hic/{fly_sample}.hic"
+    wildcard_constraints:
+        fly_sample="|".join(['control-nc14_Rep1', 'control-nc14_Rep2', 'Toll10B-nc14_Rep1', 'Toll10B-nc14_Rep2',
+                             'Tollrm910-nc14_Rep1', 'Tollrm910-nc14_Rep2', 'gd7-nc14_Rep1', 'gd7-nc14_Rep2'])
+    shell:
+        "ln -s /home/research/vaquerizas/liz/dorsal_ventral/for_paper/data/hic/{wildcards.fly_sample}/hic/{wildcards.fly_sample}.hic {output}"
+
+rule bin_fly_hic:
+    input:
+        "data/{fly_sample}/hic/{fly_sample}.hic"
+    output:
+        "data/{fly_sample}/hic/{fly_sample}_{res}.hic"
+    threads: 8
+    wildcard_constraints:
+        res="|".join(["10kb", "25kb"]),
+        fly_sample="|".join(['control-nc14_Rep1', 'control-nc14_Rep2', 'Toll10B-nc14_Rep1', 'Toll10B-nc14_Rep2',
+                             'Tollrm910-nc14_Rep1', 'Tollrm910-nc14_Rep2', 'gd7-nc14_Rep1', 'gd7-nc14_Rep2'])
+    shell:
+        "fanc hic -t {threads} -tmp "
+        "-b {wildcards.res} --low-coverage-auto --normalise  "
+        "{input} {output}"
+
+rule link_fly_data_merged:
+    output:
+        "data/{fly_sample}/hic/{fly_sample}_{res}.hic"
+    wildcard_constraints:
+        res="|".join(["10kb", "25kb"]),
+        fly_sample="|".join(['control-nc14', 'Toll10B-nc14',
+                             'Tollrm910-nc14', 'gd7-nc14'])
+    shell:
+        "ln -s /home/research/vaquerizas/liz/dorsal_ventral/for_paper/data/hic/merged/{wildcards.fly_sample}/hic/{wildcards.fly_sample}_{wildcards.res}.hic {output}"
+
+
+rule plot_chess_regions_drosophila:
+    input:
+        bed = "data/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_ssim10_SN90.bed",
+        diff_hic = expand("data/hic_differences/log2fc_{{sample2}}-nc14_{rep}_vs_{{sample1}}-nc14_{rep}_{res}.hic",
+                          rep=['Rep1', 'Rep2'], res=['25kb'])
+    output:
+        "figures/chess/{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_ssim10_SN90.pdf"
+    shell:
+        "python scripts/plot_chess_regions_drosophila.py {input.bed} {output}"
+
+rule plot_chess_regions_drosophila_merged:
+    input:
+        bed = "data/chess/merged_{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_zssim10_zSN90.bed",
+        diff_hic = expand("data/hic_differences/log2fc_{{sample2}}-nc14_vs_{{sample1}}-nc14_{res}.hic",
+                          res=['25kb'])
+    output:
+        "figures/chess/merged_{sample1}_vs_{sample2}_window2Mb_step500kb_25kb_zssim10_zSN90.pdf"
+    wildcard_constraints:
+        sample1="|".join(["control-nc14", "gd7-nc14", "Toll10B-nc14", "Tollrm910-nc14"]),
+        sample2="|".join(["control-nc14", "gd7-nc14", "Toll10B-nc14", "Tollrm910-nc14"])
+    shell:
+        "python scripts/plot_chess_regions_drosophila_merged.py {input.bed} {output}"
+
+
+
+# insulation score calulations
+
+rule insulation_score:
+    input: 
+        "data/{sample}/hic/{sample}_{res}.hic"
+    output:
+        "data/boundaries/{sample}_{res}.ii"
+    params:
+        window_sizes = lambda wildcards: [int(re.findall('([0-9]+)kb', wildcards.res)[0]) * 1000 * w for w in [4, 6, 8, 10, 15]]
+    shell: 
+        "fanc insulation {input} {output} -w {params.window_sizes}"
+
+rule insulation_bw:
+    input:
+        "data/boundaries/{sample}_{res}.ii"
+    output:
+        "data/boundaries/{sample}_{res}_{w}.bw"
+    params:
+        window_size = lambda wildcards: int(re.findall('([0-9]+)kb', wildcards.res)[0]) * 1000 * int(wildcards.w)
+    run:
+        import fanc
+        ii = fanc.load(input[0])
+        ii.to_bigwig(output[0], params.window_size)
+
+rule export_marginals:
+    input:
+        "data/{sample}/hic/{sample}_{res}.hic"
+    output:
+        "data/{sample}/hic/{sample}_{res}_marginals.bed"
+    shell:
+        "python scripts/export_marginals.py {input} {output}"
+

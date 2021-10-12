@@ -1,0 +1,10 @@
+mixA_1_ERR2704806.1.pairs,total,56983271
+mixA_1_ERR2704806.1.pairs,valid,56983271
+mixA_1.pairs,total,146839015
+mixA_1.pairs,valid,100510809
+mixA_1.pairs,inward ligation error,59228484
+mixA_1.pairs,outward ligation error,22737180
+mixA_1.pairs,self-ligations,39814228
+mixA_1.pairs,PCR duplicates,14929022
+mixA_1_ERR2704804.1.pairs,total,89855744
+mixA_1_ERR2704804.1.pairs,valid,89855744

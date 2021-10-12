@@ -1,0 +1,5 @@
+condition	replicate	read1	read2	genome	fragments
+DLBCL	1	ERR2704804_1.fastq.gz	ERR2704804_2.fastq.gz	hs	MboI
+DLBCL	2	ERR2704805_1.fastq.gz	ERR2704805_2.fastq.gz	hs	MboI
+control	1	ERR2704806_1.fastq.gz	ERR2704806_2.fastq.gz	hs	MboI
+control	2	ERR2704807_1.fastq.gz	ERR2704807_2.fastq.gz	hs	MboI

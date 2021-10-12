@@ -1,0 +1,2 @@
+K562_2.pairs,total,220153711
+K562_2.pairs,valid,220153711
