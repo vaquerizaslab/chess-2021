@@ -1,0 +1,10 @@
+.here
+._*
+data/
+logs/
+.snakemake
+renv/
+scripts/*_cache/
+scripts/*_files/
+figures/
+
