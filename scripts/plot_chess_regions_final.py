@@ -76,3 +76,67 @@ p_oe.colorbar.set_label("Log2(obs/exp)")
 
 fig.savefig("figures/final/DLBCL_examples.pdf")
 
+# supplementary figure regions
+
+fig = plt.figure(figsize=(7, 4), dpi=300)
+gs = GridSpec(ncols=7, nrows=4,
+              width_ratios=[10, 10, 10, 10, 10, 10, 2],
+              hspace=0.3, wspace=0.1)
+
+regions = ["chr2:14500000-16500000", "chr2:86500000-88500000", "chr2:96000000-98000000", 
+           "chr2:106000000-108000000", "chr2:231000000-233000000", "chr2:236500000-238500000"]
+
+for index, region in enumerate(regions):
+    if index < 3:
+        row = 0
+        col = index * 2
+    else:
+        row = 2
+        col = (index - 3) * 2
+
+    region = fanc.GenomicRegion.from_string(region)
+
+    # 1. plot Hi-C
+
+    for i, sample in enumerate(sample_names):
+        ax_hic = plt.subplot(gs[row, col + i])
+        p_hic = fancplot.SquareMatrixPlot(hic_dict[sample],
+                               norm="lin", vmin=0, vmax=0.03,
+                               title=sample,
+                               show_colorbar=False,
+                               draw_tick_legend=False, draw_minor_ticks=False,
+                               draw_tick_labels=False)
+
+        p_hic.plot(region)
+        ax_hic.set_xticks([region.start, region.end])
+        ax_hic.set_yticks([region.start, region.end])
+        ax_hic.set_yticklabels(["", ""])
+
+
+   #  2. plot Hi-C log2 obs/exp
+
+    for i, sample in enumerate(sample_names):
+        ax_oe = plt.subplot(gs[row + 1, col + i])
+        p_oe = fancplot.SquareMatrixPlot(hic_dict[sample], colormap="coolwarm",
+                              oe=True, log=True,
+                              vmin=-1.5, vmax=1.5,
+                              show_colorbar=False,
+                              draw_tick_legend=False, draw_minor_ticks=False,
+                              draw_tick_labels=i==0)
+
+        p_oe.plot(region)
+        ax_oe.set_xticks([region.start, region.end])
+        ax_oe.set_yticks([region.start, region.end])
+        ax_oe.set_yticklabels(["", ""])
+
+cax_hic = plt.subplot(gs[0, 6])
+p_hic.add_colorbar(ax=cax_hic, aspect=40)
+p_hic.colorbar.ax.minorticks_off()
+p_hic.colorbar.set_label("Normalised\ncontact prob.")
+
+cax_oe = plt.subplot(gs[1, 6])
+p_oe.add_colorbar(ax=cax_oe, aspect=40)
+p_oe.colorbar.ax.minorticks_off()
+p_oe.colorbar.set_label("Log2\n(obs/exp)")
+
+fig.savefig("figures/final/DLBCL_examples_supplementary.pdf")
